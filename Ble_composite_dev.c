@@ -1095,6 +1095,7 @@ static void ble_event_handler(ble_evt_t const *ble_event, void *context)
             NRF_LOG_INFO("<<< BLE connected >>>");
 #endif
             flag_ble_is_adv_mode = false;
+            ble_hid_connection_changed();
             m_conn_handle = ble_event->evt.gap_evt.conn_handle;
             ble_gap_evt_connected_t connected_evt = ble_event->evt.gap_evt.params.connected;
             save_connected_device_address(connected_evt.peer_addr);
@@ -1114,6 +1115,7 @@ static void ble_event_handler(ble_evt_t const *ble_event, void *context)
 
             flag_ble_connected = false;
 
+            ble_hid_connection_changed();
             m_conn_handle = BLE_CONN_HANDLE_INVALID;
         }
         break;

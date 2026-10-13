@@ -23,6 +23,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #include "Ble_composite_dev.h"
 #include "ble_hid_service.h"
+#include "PloverHIDProtocol.h"
 #include "hid_device.h"
 
 #define SEC_CURRENT SEC_JUST_WORKS
@@ -44,6 +45,7 @@ enum input_report_index
     INPUT_REP_CONSUMER_INDEX,
     INPUT_REP_SYSTEM_INDEX,
     INPUT_REP_RAW_INDEX,
+    INPUT_REP_PLOVER_INDEX,
     INPUT_REP_COUNT
 };
 
@@ -73,12 +75,15 @@ enum output_report_index
 uint8_t hid_report_map_table[] = {INPUT_REP_INDEX_INVALID,  INPUT_REP_KBD_INDEX,    INPUT_REP_MOUSE_INDEX,
                                   INPUT_REP_CONSUMER_INDEX, INPUT_REP_SYSTEM_INDEX, INPUT_REP_RAW_INDEX};
 
-static bool m_in_boot_mode = false; /**< Current protocol mode. */
+static volatile uint32_t connection_generation = 1;
+uint32_t ble_hid_connection_generation(void) { return connection_generation; }
+static bool m_in_boot_mode = false;
+void ble_hid_connection_changed(void) { ++connection_generation; m_in_boot_mode = false; } /**< Current protocol mode. */
 
 
 BLE_HIDS_DEF(m_hids, /**< Structure used to identify the HID service. */
              NRF_SDH_BLE_TOTAL_LINK_COUNT, INPUT_REPORT_LEN_KEYBOARD, INPUT_REPORT_LEN_MOUSE, INPUT_REPORT_LEN_CONSUMER, INPUT_REPORT_LEN_SYSTEM,
-             OUTPUT_REPORT_LEN_KEYBOARD, INPUT_REPORT_LEN_RAW, OUTPUT_REPORT_LEN_RAW);
+             OUTPUT_REPORT_LEN_KEYBOARD, INPUT_REPORT_LEN_RAW, OUTPUT_REPORT_LEN_RAW, PLOVER_HID_REPORT_SIZE);
 
 
 void service_error_handler(uint32_t nrf_error)
@@ -131,10 +136,12 @@ static void on_hids_evt(ble_hids_t *p_hids, ble_hids_evt_t *p_evt)
     {
         case BLE_HIDS_EVT_BOOT_MODE_ENTERED:
             m_in_boot_mode = true;
+            ++connection_generation;
             break;
 
         case BLE_HIDS_EVT_REPORT_MODE_ENTERED:
             m_in_boot_mode = false;
+            ++connection_generation;
             break;
 
         case BLE_HIDS_EVT_REP_CHAR_WRITE:
@@ -142,6 +149,10 @@ static void on_hids_evt(ble_hids_t *p_hids, ble_hids_evt_t *p_evt)
             break;
 
         case BLE_HIDS_EVT_NOTIF_ENABLED:
+        case BLE_HIDS_EVT_NOTIF_DISABLED:
+            if (p_evt->params.notification.char_id.rep_type == BLE_HIDS_REP_TYPE_INPUT &&
+                p_evt->params.notification.char_id.rep_index == INPUT_REP_PLOVER_INDEX)
+                ++connection_generation;
             break;
 
         default:
@@ -179,6 +190,7 @@ void hids_init()
 
     // Raw input report
     HID_REP_IN_SETUP(input_report_array[INPUT_REP_RAW_INDEX], INPUT_REPORT_LEN_RAW, REPORT_ID_RAW);
+    HID_REP_IN_SETUP(input_report_array[INPUT_REP_PLOVER_INDEX], PLOVER_HID_REPORT_SIZE, PLOVER_HID_REPORT_ID);
     // Raw output report
     HID_REP_OUT_SETUP(output_report_array[OUTPUT_REP_RAW_INDEX], OUTPUT_REPORT_LEN_RAW, REPORT_ID_RAW);
 
@@ -276,4 +288,20 @@ void ble_set_report_descriptor(const uint8_t *desc_report, uint16_t len)
 {
     hid_desc_report = desc_report;
     hid_desc_report_len = len;
+}
+
+// Query the actual CCCD so restored bonded subscriptions work too.
+int8_t ble_send_plover_report(const uint8_t *report)
+{
+    if (m_conn_handle == BLE_CONN_HANDLE_INVALID || m_in_boot_mode) return false;
+    uint8_t cccd[2] = {0};
+    ble_gatts_value_t value = { .len = sizeof(cccd), .offset = 0, .p_value = cccd };
+    uint32_t result = sd_ble_gatts_value_get(m_conn_handle,
+        m_hids.inp_rep_array[INPUT_REP_PLOVER_INDEX].char_handles.cccd_handle, &value);
+    if (result != NRF_SUCCESS || !(cccd[0] & 1)) return false;
+    result = ble_hids_inp_rep_send(&m_hids, INPUT_REP_PLOVER_INDEX, PLOVER_HID_REPORT_SIZE, (uint8_t *)report, m_conn_handle);
+    if (result == NRF_SUCCESS) return 1;
+    if (result == NRF_ERROR_RESOURCES || result == NRF_ERROR_BUSY || result == NRF_ERROR_INVALID_STATE ||
+        result == BLE_ERROR_GATTS_SYS_ATTR_MISSING || result == NRF_ERROR_FORBIDDEN) return 0;
+    return -1;
 }

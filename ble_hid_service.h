@@ -11,6 +11,10 @@ extern "C"
 #define OUTPUT_REPORT_LEN_RAW 200 /**< Maximum length of Output Report. */
 
 void hids_init();
+// PloverHID uses a fixed report ID outside the legacy dense report map.
+int8_t ble_send_plover_report(const uint8_t *report);
+uint32_t ble_hid_connection_generation(void);
+void ble_hid_connection_changed(void);
 void ble_set_report_descriptor(const uint8_t *desc_report, uint16_t len);
 bool ble_send_report(uint8_t report_id, const uint8_t *p_key_pattern,uint8_t key_pattern_len);
 
